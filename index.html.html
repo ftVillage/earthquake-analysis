@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>地震揺れ解析（iPad Safari版）</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;color:#17202a;background:#f4f6f8}
+body{margin:0;padding:16px;max-width:900px;margin-inline:auto}
+h1{font-size:1.45rem;margin:.2rem 0 .4rem} h2{font-size:1.08rem;margin:.2rem 0 .6rem}
+p{line-height:1.55}.card{background:white;border:1px solid #dce2e8;border-radius:14px;padding:14px;margin:12px 0}
+button,.filebtn{background:#1459c7;color:white;border:0;border-radius:10px;padding:12px 15px;font-size:1rem;display:inline-block}
+button:disabled{opacity:.45}.secondary{background:#e9eef5;color:#17202a}
+input,select{font-size:1rem;max-width:100%}
+label{display:block;margin:9px 0} .muted{color:#586575;font-size:.9rem}
+#preview{width:100%;height:auto;display:block;background:#111;border-radius:8px;touch-action: manipulation}
+#graph{width:100%;height:300px;display:block}
+.status{padding:10px;border-radius:9px;background:#edf3fb;white-space:pre-wrap}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.step{font-weight:700;color:#1459c7}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px}
+.stat{background:#f3f6fa;padding:10px;border-radius:9px}
+.stat b{display:block;font-size:1.15rem;margin-top:4px}
+canvas{max-width:100%}
+</style>
+</head>
+<body>
+<h1>地震揺れ解析</h1>
+<p class="muted">iPadのSafariで動く簡易解析ツール。動画は端末内で処理し、外部サーバーには送信しません。</p>
+
+<div class="card">
+<h2>1. 動画を選択</h2>
+<label>解析する動画（複数選択可）
+<input id="files" type="file" accept="video/*" multiple></label>
+<p class="muted">同じ画角・同じカメラ位置で撮影した動画を選んでください。動画の長さやフレームレートが違っていても処理できます。</p>
+<div id="fileinfo" class="muted">動画はまだ選択されていません。</div>
+</div>
+
+<div class="card">
+<h2>2. 最初の動画を表示して測定箇所を指定</h2>
+<p class="muted">動画の最初のフレームを表示します。画面をタップして、順番に指定してください。</p>
+<video id="video" playsinline muted style="display:none"></video>
+<canvas id="preview"></canvas>
+<div class="status" id="instruction">動画を選択してください。</div>
+<div class="row" style="margin-top:10px">
+<button id="next" disabled>次の指定へ</button>
+<button id="reset" class="secondary">指定をやり直す</button>
+</div>
+<p class="muted">指定順：①壁の目盛り1区間の左端中心 ②同じ区間の右端中心（合計50mm） ③地面の追跡位置 ④建物最上部の追跡位置。追跡位置は、模様・角など特徴がはっきりした場所の中心をタップしてください。</p>
+</div>
+
+<div class="card">
+<h2>3. 解析設定</h2>
+<label>解析するフレーム間隔
+<select id="sample">
+<option value="0.05">0.05秒ごと（細かい・処理が重い）</option>
+<option value="0.1" selected>0.1秒ごと（おすすめ）</option>
+<option value="0.2">0.2秒ごと（軽い）</option>
+</select></label>
+<label>追跡範囲
+<select id="radius">
+<option value="35">狭い</option>
+<option value="60" selected>標準</option>
+<option value="90">広い</option>
+</select></label>
+<button id="analyze" disabled>解析開始</button>
+<div id="progress" class="status" style="margin-top:10px">測定箇所を4つ指定すると解析できます。</div>
+</div>
+
+<div class="card">
+<h2>4. 平均結果</h2>
+<div class="statgrid" id="stats"></div>
+<canvas id="graph" width="900" height="420"></canvas>
+<div class="row">
+<button id="csv" disabled>平均データCSVを保存</button>
+<button id="individual" disabled class="secondary">動画別CSVを保存</button>
+</div>
+<p class="muted">グラフは左右方向の変位です。建物－地面の相対変位は、同じ時刻の建物変位から地面変位を引いています。</p>
+</div>
+<div class="card">
+<h2>測定上の注意</h2>
+<ul class="muted">
+<li>50mmの目盛りと測定対象の奥行きが違う場合、遠近差でmm換算に誤差が出ます。今回の壁の目盛りを使う値は参考値です。</li>
+<li>この方式は画面上の模様・輪郭を追う簡易テンプレート追跡です。追跡位置が隠れる、ぼやける、似た模様がある場合は誤追跡することがあります。</li>
+<li>動画ごとに揺れ始める時刻がずれる場合、単純平均では波形が小さくなることがあります。動画の開始タイミングをそろえて撮影してください。</li>
+<li>変位は動画開始時点を0とした相対値です。実際の震度や地震加速度を直接測定するものではありません。</li>
+<li>カメラが固定されていても、画面全体の微小な揺れやピント変化は測定誤差になります。</li>
+</ul>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const filesEl=$('files'), video=$('video'), canvas=$('preview'), ctx=canvas.getContext('2d',{willReadFrequently:true});
+let files=[], points=[], stage=0, templates=[], results=[], avgRows=[];
+const labels=['目盛り区間の左端','目盛り区間の右端','地面の追跡位置','建物最上部の追跡位置'];
+function say(t){$('instruction').textContent=t}
+function drawVideo(){
+ if(!video.videoWidth)return;
+ canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+ ctx.drawImage(video,0,0,canvas.width,canvas.height);
+ points.forEach((p,i)=>{ctx.beginPath();ctx.arc(p.x,p.y,Math.max(7,canvas.width/65),0,Math.PI*2);ctx.strokeStyle=['#ffcc00','#ffcc00','#00e676','#ff4081'][i];ctx.lineWidth=4;ctx.stroke();ctx.fillStyle='white';ctx.font=`bold ${Math.max(18,canvas.width/35)}px sans-serif`;ctx.fillText(String(i+1),p.x+10,p.y-10)});
+}
+filesEl.addEventListener('change',async()=>{
+ files=Array.from(filesEl.files||[]);points=[];stage=0;templates=[];results=[];
+ if(!files.length){$('fileinfo').textContent='動画はまだ選択されていません。';return}
+ $('fileinfo').textContent=files.map(f=>f.name).join('\n');
+ video.src=URL.createObjectURL(files[0]);video.load();
+ await new Promise((resolve,reject)=>{video.onloadeddata=resolve;video.onerror=reject});
+ video.currentTime=0;
+ await new Promise(resolve=>video.onseeked=resolve);
+ drawVideo();$('next').disabled=false;$('analyze').disabled=true;
+ say('① '+labels[0]+'を画面上でタップしてください。');
+});
+canvas.addEventListener('pointerdown',e=>{
+ if(!video.videoWidth||stage>=4)return;
+ const r=canvas.getBoundingClientRect();
+ const x=(e.clientX-r.left)*canvas.width/r.width;
+ const y=(e.clientY-r.top)*canvas.height/r.height;
+ points.push({x,y});stage++;drawVideo();
+ if(stage<4)say('次に「'+labels[stage]+'」をタップしてください。');
+ else {say('4か所の指定が完了しました。位置が正しいか確認し、「解析開始」を押してください。');$('analyze').disabled=false;}
+});
+$('next').addEventListener('click',()=>{if(points.length===0)say('① '+labels[0]+'をタップしてください。')});
+$('reset').addEventListener('click',()=>{points=[];stage=0;drawVideo();$('analyze').disabled=true;say('① '+labels[0]+'を画面上でタップしてください。')});
+
+function getGrayPatch(data,w,h,cx,cy,rad=10){
+ const vals=[], x0=Math.round(cx-rad),y0=Math.round(cy-rad);
+ for(let y=y0;y<=cy+rad;y++)for(let x=x0;x<=cx+rad;x++){
+  if(x<0||y<0||x>=w||y>=h){vals.push(0);continue}
+  const k=(y*w+x)*4; vals.push((data[k]*0.299+data[k+1]*0.587+data[k+2]*0.114)|0);
+ }
+ return {vals,rad,size:rad*2+1};
+}
+function match(data,w,h,templ,center,radius){
+ const s=templ.size,rad=templ.rad,step=3;
+ let best=Infinity,bx=center.x,by=center.y;
+ const minX=Math.max(rad,Math.round(center.x-radius)),maxX=Math.min(w-rad-1,Math.round(center.x+radius));
+ const minY=Math.max(rad,Math.round(center.y-radius)),maxY=Math.min(h-rad-1,Math.round(center.y+radius));
+ for(let cy=minY;cy<=maxY;cy+=step)for(let cx=minX;cx<=maxX;cx+=step){
+  let err=0,n=0,idx=0;
+  for(let yy=-rad;yy<=rad;yy++)for(let xx=-rad;xx<=rad;xx++,idx++){
+   const k=((cy+yy)*w+(cx+xx))*4;
+   const g=(data[k]*.299+data[k+1]*.587+data[k+2]*.114);
+   err+=Math.abs(g-templ.vals[idx]);n++;
+  }
+  err/=n;if(err<best){best=err;bx=cx;by=cy;}
+ }
+ return {x:bx,y:by,score:best};
+}
+function seekTo(t){
+ return new Promise(resolve=>{
+  const done=()=>{video.removeEventListener('seeked',done);resolve()};
+  video.addEventListener('seeked',done,{once:true});
+  video.currentTime=Math.min(t,Math.max(0,video.duration-.001));
+ });
+}
+async function frameAt(t){
+ await seekTo(t);
+ ctx.drawImage(video,0,0,canvas.width,canvas.height);
+ return ctx.getImageData(0,0,canvas.width,canvas.height);
+}
+async function analyzeOne(file,index,dt,radius,scale){
+ video.src=URL.createObjectURL(file);video.load();
+ await new Promise((res,rej)=>{video.onloadeddata=res;video.onerror=rej});
+ const duration=video.duration;
+ if(!isFinite(duration)||duration<=0)throw Error(file.name+' の動画時間を読み取れません');
+ const first=await frameAt(0),w=canvas.width,h=canvas.height;
+ const centers=[points[2],points[3]];
+ const temps=centers.map(p=>getGrayPatch(first.data,w,h,p.x,p.y,9));
+ let current=centers.map(p=>({...p}));
+ const rows=[];
+ const count=Math.floor(duration/dt)+1;
+ for(let i=0;i<count;i++){
+  const t=Math.min(i*dt,duration-.001);
+  const im= i===0?first:await frameAt(t);
+  const a=match(im.data,w,h,temps[0],current[0],radius);
+  const b=match(im.data,w,h,temps[1],current[1],radius);
+  current=[{x:a.x,y:a.y},{x:b.x,y:b.y}];
+  rows.push({t,ground:(a.x-centers[0].x)*scale,top:(b.x-centers[1].x)*scale,scoreG:a.score,scoreT:b.score});
+  if(i%20===0){$('progress').textContent=`解析中 ${index+1}/${files.length}本目：${file.name}\n${Math.round(i/count*100)}%`;await new Promise(r=>setTimeout(r,0));}
+ }
+ return {name:file.name,rows};
+}
+function download(name,content,type='text/csv'){
+ const blob=new Blob(['\ufeff'+content],{type:type+';charset=utf-8'});
+ const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+$('analyze').addEventListener('click',async()=>{
+ try{
+ $('analyze').disabled=true;$('progress').textContent='解析を準備しています…';
+ const px=Math.hypot(points[1].x-points[0].x,points[1].y-points[0].y);
+ if(px<5)throw Error('50mm目盛りの2点が近すぎます。指定し直してください。');
+ const mmPerPx=50/px,dt=Number($('sample').value),radius=Number($('radius').value);
+ results=[];
+ for(let i=0;i<files.length;i++)results.push(await analyzeOne(files[i],i,dt,radius,mmPerPx));
+ const end=Math.min(...results.map(r=>r.rows[r.rows.length-1].t));
+ const n=Math.floor(end/dt)+1;
+ avgRows=[];
+ for(let i=0;i<n;i++){
+  const t=i*dt,gs=[],ts=[];
+  results.forEach(r=>{let j=Math.min(i,r.rows.length-1);gs.push(r.rows[j].ground);ts.push(r.rows[j].top)});
+  const g=gs.reduce((a,b)=>a+b,0)/gs.length,top=ts.reduce((a,b)=>a+b,0)/ts.length;
+  avgRows.push({t,ground:g,top,relative:top-g});
+ }
+ showResults();$('csv').disabled=false;$('individual').disabled=false;
+ $('progress').textContent=`解析完了：${results.length}本\n1目盛り50mmとして換算（${px.toFixed(1)}px / 50mm）。結果を確認してください。`;
+ }catch(e){$('progress').textContent='エラー：'+e.message;alert(e.message)}
+ finally{$('analyze').disabled=false}
+});
+function calc(a){const mean=a.reduce((s,x)=>s+x,0)/a.length;return {max:Math.max(...a.map(x=>Math.abs(x-mean))),pp:Math.max(...a)-Math.min(...a),rms:Math.sqrt(a.reduce((s,x)=>s+(x-mean)**2,0)/a.length)}}
+function showResults(){
+ const g=calc(avgRows.map(r=>r.ground)),t=calc(avgRows.map(r=>r.top)),rel=calc(avgRows.map(r=>r.relative));
+ const ratio=g.pp>1e-6?t.pp/g.pp:NaN;
+ $('stats').innerHTML=[
+ ['地面 最大変位',g.max.toFixed(2)+' mm'],['建物最上部 最大変位',t.max.toFixed(2)+' mm'],
+ ['相対変位 最大',rel.max.toFixed(2)+' mm'],['建物/地面 peak-to-peak比',isFinite(ratio)?ratio.toFixed(2)+' 倍':'算出不可']
+ ].map(x=>`<div class="stat">${x[0]}<b>${x[1]}</b></div>`).join('');
+ const c=$('graph'),gctx=c.getContext('2d'),W=c.width,H=c.height,pad=55;
+ gctx.clearRect(0,0,W,H);
+ const all=avgRows.flatMap(r=>[r.ground,r.top,r.relative]),lo=Math.min(...all),hi=Math.max(...all),span=Math.max(1,hi-lo);
+ const X=i=>pad+i/(avgRows.length-1||1)*(W-2*pad),Y=v=>H-pad-(v-lo)/span*(H-2*pad);
+ gctx.strokeStyle='#ccd3dc';gctx.lineWidth=1;gctx.beginPath();gctx.moveTo(pad,20);gctx.lineTo(pad,H-pad);gctx.lineTo(W-15,H-pad);gctx.stroke();
+ gctx.fillStyle='#273444';gctx.font='16px sans-serif';gctx.fillText('変位 (mm)',8,18);gctx.fillText('時間 (秒)',W-100,H-12);
+ const series=[['ground','#1769d2'],['top','#e34b72'],['relative','#179b67']];
+ series.forEach(([key,color])=>{gctx.strokeStyle=color;gctx.lineWidth=3;gctx.beginPath();avgRows.forEach((r,i)=>{if(i===0)gctx.moveTo(X(i),Y(r[key]));else gctx.lineTo(X(i),Y(r[key]))});gctx.stroke()});
+ gctx.font='15px sans-serif';[['地面','#1769d2'],['建物最上部','#e34b72'],['建物－地面','#179b67']].forEach((v,i)=>{gctx.fillStyle=v[1];gctx.fillRect(70+i*210,28,18,5);gctx.fillText(v[0],95+i*210,36)});
+ gctx.fillStyle='#333';gctx.fillText(hi.toFixed(1),8,55);gctx.fillText(lo.toFixed(1),8,H-pad);
+}
+$('csv').addEventListener('click',()=>{
+ let s='time_s,ground_average_mm,building_top_average_mm,building_relative_mm\n';
+ avgRows.forEach(r=>s+=`${r.t},${r.ground},${r.top},${r.relative}\n`);
+ download('average_displacement.csv',s);
+});
+$('individual').addEventListener('click',()=>{
+ results.forEach((r,i)=>{
+  let s='time_s,ground_mm,building_top_mm,score_ground,score_top\n';
+  r.rows.forEach(x=>s+=`${x.t},${x.ground},${x.top},${x.scoreG},${x.scoreT}\n`);
+  download(`video_${i+1}_displacement.csv`,s);
+ });
+});
+</script>
+</body>
+</html>
